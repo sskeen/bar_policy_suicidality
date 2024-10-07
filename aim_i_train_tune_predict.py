@@ -31,26 +31,34 @@ Installs, imports, and downloads requisite models and packages. Organizes RAP-co
 """
 
 # Commented out IPython magic to ensure Python compatibility.
-#%%capture
-
+# %%capture
+# 
+# %pip install accelerate
+# %pip install bitsandbytes
 # %pip install causalnlp
 # %pip install contractions
 # %pip install datasets
+# %pip install evaluate
 # %pip install lime
+# %pip install peft
+# #%pip install trl
 # %pip install unidecode
 # %pip install wandb
-
-#%pip uninstall -y pyarrow datasets
-#%pip install pyarrow datasets
-
-#!python -m spacy download en_core_web_lg --user
+# 
+# #%pip uninstall -y pyarrow datasets
+# #%pip install pyarrow datasets
+# 
+# #!python -m spacy download en_core_web_lg --user
 
 """**Import**"""
 
+import accelerate
 import ast
+import bitsandbytes as bnb
 import contractions
 #import en_core_web_lg
 import gzip
+import huggingface_hub
 import json
 import lime
 import logging
@@ -59,6 +67,7 @@ import nltk
 import numpy as np
 import os
 import pandas as pd
+import peft
 import random
 import re
 import seaborn as sns
@@ -66,6 +75,7 @@ import sklearn
 import spacy
 import string
 import torch
+#import trl
 import wandb.sdk
 import warnings
 
@@ -157,7 +167,7 @@ drive.mount(
 #%mkdir inputs outputs code temp
 
 #%cd inputs
-#%mkdir archives data
+#%mkdir annotation archives data
 
 #%cd ../outputs
 #%mkdir models tables figures
@@ -176,7 +186,7 @@ bar_policy_suicidality/
 └── temp/
 
 """### 2. Write
-Writes and imports preprocess.py, train.py, predict.py.
+Writes and imports preprocess.py, train.py, redact.py, predict.py.
 ***
 """
 
@@ -280,11 +290,32 @@ Writes and imports preprocess.py, train.py, predict.py.
 
 """#### train.py
 
-**_train_eval_save_bl_models_**
+**_set_seed_**
 """
 
 # Commented out IPython magic to ensure Python compatibility.
 # %%writefile train.py
+# 
+# import torch
+# import numpy as np
+# import random
+# 
+# def set_seed(seed):
+#     """
+#     Set random seeds for reproducibility in Pytorch.
+#     """
+#     random.seed(seed)
+#     np.random.seed(seed)
+#     torch.manual_seed(seed)
+#     torch.cuda.manual_seed(seed)
+#     torch.cuda.manual_seed_all(seed)
+#     torch.backends.cudnn.deterministic = True
+#     torch.backends.cudnn.benchmark = False
+
+"""**_train_eval_save_bl_models_**"""
+
+# Commented out IPython magic to ensure Python compatibility.
+# %%writefile -a train.py
 # 
 # import torch
 # from torch.utils.data import DataLoader, TensorDataset
@@ -295,27 +326,28 @@ Writes and imports preprocess.py, train.py, predict.py.
 #                           BertTokenizer,
 #                           RobertaTokenizer,
 #                           DistilBertTokenizer,
+#                           get_linear_schedule_with_warmup,
 #                           )
-# from sklearn.metrics import (
-#                              f1_score,
-#                              matthews_corrcoef,
-#                              average_precision_score,
-#                              )
-# from sklearn.model_selection import StratifiedKFold
+# from sklearn.metrics import f1_score, matthews_corrcoef, average_precision_score
+# from sklearn.model_selection import StratifiedKFold, train_test_split
 # from sklearn.preprocessing import LabelEncoder
 # from torch.nn import CrossEntropyLoss
 # import numpy as np
 # import pandas as pd
 # 
-# def train_eval_save_bl_models(d_augmented, targets_and_class_weights, models, save_path, cycle):
+# def train_eval_save_bl_models(target_datasets, targets_and_class_weights, models, save_path, cycle, hyperparameter_grid):
 #     """
-#     Fine-tune (on augmented data) and eval (on de-augmented data) pre-trained baseline LMs on multiple targets
-#     using stratified k-fold cross-validation, save best performing model x target based on F1 (macro) score.
+#     Fine-tune and eval pre-trained baseline LMs on multiple targets using target-specific train and test datasets.
+# 
+#     Training sets d_train_{target} are split using 5-fold cross-validation: 4 folds for training and 1 fold for validation. Training
+#     folds use augmented data; validation folds use original data. The best model is selected based on average performance across the
+#     folds and evaluated on separate test sets d_test_{target}.
 # 
 #     Parameters:
 #     -----------
-#     d_augmented : pd.DataFrame
-#         The augmented dataset containing text data, target labels, and augmentation dummies.
+#     target_datasets : dict
+#         A dictionary where keys are target names and values are tuples containing the train and test datasets for each target.
+#         For example: {'asp': (d_train_asp, d_test_asp), 'dep': (d_train_dep, d_test_dep)}
 # 
 #     targets_and_class_weights : dict
 #         A dictionary where keys are target names and values are lists of class weights corresponding to each target.
@@ -330,23 +362,18 @@ Writes and imports preprocess.py, train.py, predict.py.
 #         The path where the best models will be saved.
 # 
 #     cycle : str
-#         The cycle identifier: 'benchmark', indicating performance with default params;'adapted', indicating performance
+#         The cycle identifier: 'benchmark', indicating performance with default params; 'adapted', indicating performance
 #         with in-domain adapted params.
+# 
+#     hyperparameter_grid : dict
+#         Dictionary containing hyperparameter values: batch_size, gradient_accumulation_steps, learning_rate, num_epochs, warmup_steps, and weight_decay.
 # 
 #     Returns:
 #     --------
 #     d_{cycle}_performance : pd.DataFrame
-#         A df containing performance metrics for each target and model per fold per pre-specified cycle.
+#         A df containing performance metrics for each target and model per fold per pre-specified cycle,
+#         and final evaluation on test data.
 #     """
-# 
-#     # initialize k-folds
-# 
-#     k_fold = StratifiedKFold(
-#                              n_splits = 5,
-#                              shuffle = True,
-#                              random_state = 56,
-#                              )
-#     results = []
 # 
 #     # verify cycle
 # 
@@ -357,99 +384,129 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     print("CUDA: ", torch.cuda.is_available())
 #     use_cuda = torch.cuda.is_available()
 # 
-#     # best target x model f1 tracking
+#     # set seed
+# 
+#     set_seed(56)
+# 
+#     # unpack hyperparameters
+# 
+#     batch_size = hyperparameter_grid.get('batch_size', 4)
+#     gradient_accumulation_steps = hyperparameter_grid.get('gradient_accumulation_steps', 1)
+#     learning_rate = hyperparameter_grid.get('learning_rate', 2e-5)
+#     num_epochs = hyperparameter_grid.get('num_epochs', 2)
+#     warmup_steps = hyperparameter_grid.get('warmup_steps', 0)
+#     weight_decay = hyperparameter_grid.get('weight_decay', 0.0)
+# 
+#     # best target x model F1 tracking
 # 
 #     best_f1_scores = {target: {'score': 0, 'model': None, 'model_instance': None} for target in targets_and_class_weights}
+#     results = []
 # 
 #     # training loop: target x model
 # 
 #     for target, class_weights in targets_and_class_weights.items():
-# 
 #         print("\n======================================================================================")
 #         print(f"Label: {target}")
 #         print("======================================================================================")
 # 
-#         for model_name, (model_class, tokenizer_class, pretrained_model_name) in models.items():
+#         # target-specific datasets
 # 
+#         d_train, d_test = target_datasets[target]
+# 
+#         # split augmented v. non-augmented data
+# 
+#         d_train_aug = d_train[d_train['aug'] == 1]
+#         d_train_no_aug = d_train[d_train['aug'] == 0]
+# 
+#         # prepare fold-wise training v. validation data
+# 
+#         X_train_aug, y_train_aug = d_train_aug['text'].values, d_train_aug[target].values
+#         X_train_no_aug, y_train_no_aug = d_train_no_aug['text'].values, d_train_no_aug[target].values
+#         X_test, y_test = d_test['text'].values, d_test[target].values
+# 
+#         # determine target type, encode (as needed)
+# 
+#         target_type = 'binary' if len(np.unique(y_train_aug)) <= 2 else 'multiclass'
+#         le = LabelEncoder() # Using separate LabelEncoder for each target data group to avoid encoding mismatch issues.
+#         if target_type == 'binary':
+#             #le = LabelEncoder()
+#             y_train_aug = le.fit_transform(y_train_aug)
+#             y_train_no_aug = le.fit_transform(y_train_no_aug) # Re-encode with new encoder
+#             y_test = le.transform(y_test)
+# 
+#         # define k folds
+# 
+#         k_fold = StratifiedKFold(
+#                                  n_splits = 5,
+#                                  shuffle = True,
+#                                  random_state = 56,
+#                                  )
+# 
+#         for model_name, (model_class, tokenizer_class, pretrained_model_name) in models.items():
 #             print(f"\nFine-tuning {model_name} for {target}")
 #             print("--------------------------------------------------------------------------------------")
 # 
-#             fold_results = {'target': target, 'model': model_name}
-#             fold_f1 = []  # To store F1 scores for all folds
-#             fold_mcc = []  # New: To store MCC for all folds
-#             fold_auprc = []  # New: To store AUPRC for all folds
+#             fold_f1, fold_mcc, fold_auprc = [], [], []  ### store fold-wise performance metrics
 # 
-#             # extract text, targets
+#             # initialize tokenizer
 # 
-#             X = d_augmented['text'].values
-#             y = d_augmented[target].values
+#             tokenizer = tokenizer_class.from_pretrained(pretrained_model_name)
 # 
-#             # determine target type
+#             for fold_idx, (train_no_aug_idx, valid_idx) in enumerate(k_fold.split(X_train_no_aug, y_train_no_aug)):
+#                 print(f"\nFold {fold_idx + 1}/5")
 # 
-#             target_type = 'binary' if len(np.unique(y)) <= 2 else 'multiclass'
+#                 # create training set: combine aug = 1 (augmented) with fold-specific aug = 0 (non-augmented)
 # 
-#             # convert target as needed
+#                 X_train_fold_aug = X_train_aug
+#                 y_train_fold_aug = y_train_aug
 # 
-#             if target_type == 'binary':
-#                 le = LabelEncoder()
-#                 y = le.fit_transform(y)
+#                 X_train_fold_no_aug, X_valid_fold = X_train_no_aug[train_no_aug_idx], X_train_no_aug[valid_idx]
+#                 y_train_fold_no_aug, y_valid_fold = y_train_no_aug[train_no_aug_idx], y_train_no_aug[valid_idx]
 # 
-#             # iterate over 5-fold CV
+#                 # combine augmented and non-augmented training data
 # 
-#             for fold_idx, (train_idx, valid_idx) in enumerate(k_fold.split(X, y)):
-#                 X_train, y_train = X[train_idx], y[train_idx]
-#                 X_valid, y_valid = X[valid_idx], y[valid_idx]
+#                 X_train_fold = np.concatenate([X_train_fold_aug, X_train_fold_no_aug])
+#                 y_train_fold = np.concatenate([y_train_fold_aug, y_train_fold_no_aug])
 # 
-#                 # parse train vs test sets by 'aug'
+#                 # tokenize training and validation data
 # 
-#                 train_aug_mask = d_augmented.iloc[train_idx]['aug'] == 1
-#                 valid_no_aug_mask = d_augmented.iloc[valid_idx]['aug'] != 1
+#                 encoded_train = tokenizer(
+#                                           X_train_fold.tolist(),
+#                                           padding = True,
+#                                           truncation = True,
+#                                           return_tensors = 'pt',
+#                                           )
 # 
-#                 X_train_aug = X_train[train_aug_mask]
-#                 y_train_aug = y_train[train_aug_mask]
-#                 X_valid_no_aug = X_valid[valid_no_aug_mask]
-#                 y_valid_no_aug = y_valid[valid_no_aug_mask]
+#                 encoded_valid = tokenizer(
+#                                           X_valid_fold.tolist(),
+#                                           padding = True,
+#                                           truncation = True,
+#                                           return_tensors = 'pt',
+#                                           )
 # 
-#                 # tokenize
-# 
-#                 tokenizer = tokenizer_class.from_pretrained(pretrained_model_name)
-#                 encoded_train_aug = tokenizer(
-#                                               X_train_aug.tolist(),
-#                                               padding = True,
-#                                               truncation = True,
-#                                               return_tensors = 'pt',
-# 
-#                                               )
-#                 encoded_valid_no_aug = tokenizer(
-#                                                  X_valid_no_aug.tolist(),
-#                                                  padding = True,
-#                                                  truncation = True,
-#                                                  return_tensors = 'pt',
-#                                                  )
-# 
-#                 train_dataset_aug = TensorDataset(
-#                                                   encoded_train_aug['input_ids'],
-#                                                   encoded_train_aug['attention_mask'],
-#                                                   torch.tensor(y_train_aug),
-#                                                   )
-# 
-#                 valid_dataset_no_aug = TensorDataset(
-#                                                      encoded_valid_no_aug['input_ids'],
-#                                                      encoded_valid_no_aug['attention_mask'],
-#                                                      torch.tensor(y_valid_no_aug),
-#                                                      )
-# 
-#                 train_loader_aug = DataLoader(
-#                                               train_dataset_aug,
-#                                               batch_size = 4,
-#                                               shuffle = True,
+#                 train_dataset = TensorDataset(
+#                                               encoded_train['input_ids'],
+#                                               encoded_train['attention_mask'],
+#                                               torch.tensor(y_train_fold),
 #                                               )
 # 
-#                 valid_loader_no_aug = DataLoader(
-#                                                  valid_dataset_no_aug,
-#                                                  batch_size = 4,
-#                                                  shuffle = False,
-#                                                  )
+#                 valid_dataset = TensorDataset(
+#                                               encoded_valid['input_ids'],
+#                                               encoded_valid['attention_mask'],
+#                                               torch.tensor(y_valid_fold),
+#                                               )
+# 
+#                 train_loader = DataLoader(
+#                                           train_dataset,
+#                                           batch_size = batch_size,
+#                                           shuffle = True,
+#                                           )
+# 
+#                 valid_loader = DataLoader(
+#                                           valid_dataset,
+#                                           batch_size = batch_size,
+#                                           shuffle = False,
+#                                           )
 # 
 #                 # instantiate model
 # 
@@ -457,60 +514,89 @@ Writes and imports preprocess.py, train.py, predict.py.
 # 
 #                 # migrate to CUDA
 # 
+#                 use_cuda = torch.cuda.is_available()
 #                 if use_cuda:
 #                     model = model.cuda()
 # 
-#                 # fine-tune with 'aug'
+#                 # set optimizer + scheduler
 # 
-#                 optimizer = torch.optim.AdamW(model.parameters(), lr = 2e-5)
+#                 optimizer = torch.optim.AdamW(
+#                                               model.parameters(),
+#                                               lr = learning_rate,
+#                                               weight_decay = weight_decay,
+#                                               )
+# 
+#                 total_steps = len(train_loader) * num_epochs
+#                 #scheduler = torch.optim.lr_scheduler.LinearLR(
+#                 #                                              optimizer,
+#                 #                                              start_factor = 0.1,
+#                 #                                              #total_iters = warmup_steps,
+#                 #                                              total_iters = total_steps, # Fix: corrected from warmup_steps to total_steps
+#                 #                                              )
+# 
+#                 scheduler = get_linear_schedule_with_warmup(
+#                                                             optimizer,
+#                                                             num_warmup_steps = warmup_steps,
+#                                                             num_training_steps = total_steps
+#                                                             )
+# 
+#                 # fine-tune model on training folds (x4)
+# 
 #                 model.train()
-# 
-#                 # define loss criterion, class weights
-# 
-#                 criterion = CrossEntropyLoss(
-#                                              weight = torch.tensor(
+#                 criterion = CrossEntropyLoss(weight = torch.tensor(
 #                                                                    class_weights,
-#                                                                    dtype = torch.float).cuda() if use_cuda else torch.tensor(
-#                                                                                                                              class_weights,
-#                                                                                                                              dtype = torch.float)
-#                                             )
+#                                                                    dtype = torch.float
+#                                                                    ).cuda() if use_cuda else torch.tensor(
+#                                                                                                           class_weights,
+#                                                                                                           dtype = torch.float
+#                                                                                                           )
+#                                              )
 # 
-#                 for epoch in range(2):  # range(n) = n epochs
-#                     for i, batch in enumerate(train_loader_aug):
+#                 for epoch in range(num_epochs):
+#                     for i, batch in enumerate(train_loader):
 #                         input_ids, attention_mask, labels = batch
 #                         labels = labels.long()
+# 
 #                         if use_cuda:
 #                             input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-#                         optimizer.zero_grad()
-#                         outputs = model(
-#                                         input_ids,
-#                                         attention_mask = attention_mask,
-#                                         )
+# 
+#                         outputs = model(input_ids, attention_mask = attention_mask)
 #                         logits = outputs.logits
 #                         loss = criterion(logits, labels)
-#                         loss.backward()
-#                         optimizer.step()
 # 
-#                 # eval without 'aug'
+#                         # accumulate gradients, normalize loss
+# 
+#                         loss = loss / gradient_accumulation_steps
+#                         loss.backward()
+# 
+#                         # update model weights post-accumulation steps
+# 
+#                         if (i + 1) % gradient_accumulation_steps == 0:
+#                             optimizer.step()
+#                             optimizer.zero_grad()
+# 
+#                         # apply learning rate scheduler
+# 
+#                         scheduler.step()
+# 
+#                 # evaluate on validation fold (x1)
 # 
 #                 model.eval()
-#                 all_predictions = []
-#                 all_true_labels = []
+#                 all_predictions, all_true_labels = [], []
 #                 with torch.no_grad():
-#                     for batch in valid_loader_no_aug:
+#                     for batch in valid_loader:
 #                         input_ids, attention_mask, labels = batch
+# 
 #                         if use_cuda:
 #                             input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-#                         outputs = model(
-#                                         input_ids,
-#                                         attention_mask = attention_mask,
-#                                         )
+# 
+#                         outputs = model(input_ids, attention_mask = attention_mask)
 #                         logits = outputs.logits
 #                         predictions = torch.argmax(logits, dim = 1).tolist()
 #                         all_predictions.extend(predictions)
 #                         all_true_labels.extend(labels.tolist())
 # 
-#                 # eval metrics without 'aug'
+#                 # performance metrics per validation fold
 # 
 #                 f1_macro = f1_score(
 #                                     all_true_labels,
@@ -533,29 +619,109 @@ Writes and imports preprocess.py, train.py, predict.py.
 #                 fold_mcc.append(mcc)
 #                 fold_auprc.append(auprc)
 # 
-#             # tabulate F1, MCC, AUPRC fold-wise
+#             # mean results over folds, track best model
 # 
-#             for i in range(len(fold_f1)):
-#                 results.append({
-#                     'target': target,
-#                     'model': model_name,
-#                     'fold': i + 1,
-#                     'f1_macro': fold_f1[i],
-#                     'mcc': fold_mcc[i],
-#                     'auprc': fold_auprc[i]
-#                 })
-# 
-#             if np.mean(fold_f1) > best_f1_scores[target]['score']:
-#                 best_f1_scores[target]['score'] = np.mean(fold_f1)
+#             mean_f1 = np.mean(fold_f1)
+#             if mean_f1 > best_f1_scores[target]['score']:
+#                 best_f1_scores[target]['score'] = mean_f1
 #                 best_f1_scores[target]['model'] = model_name
 #                 best_f1_scores[target]['model_instance'] = model
-# 
-#                 # save the best model x target
 # 
 #                 save_model_name = f'{target}_{model_name}_best_{cycle}_model.pt'
 #                 torch.save(model.state_dict(), save_path + save_model_name)
 # 
-#     # display, export results
+#             # store results for each fold
+# 
+#             for i in range(5):
+#                 results.append({
+#                                 'target': target,
+#                                 'model': model_name,
+#                                 'fold': i + 1,
+#                                 'f1_macro': fold_f1[i],
+#                                 'mcc': fold_mcc[i],
+#                                 'auprc': fold_auprc[i]
+#                                 })
+# 
+#         # test on held-out d_test_{target} df
+# 
+#         print(f"\nTest on held-out d_test_{target} using the best {best_f1_scores[target]['model']} model")
+#         print("--------------------------------------------------------------------------------------")
+#         test_model = best_f1_scores[target]['model_instance']
+#         test_model.eval()
+# 
+#         #tokenizer = tokenizer_class.from_pretrained(pretrained_model_name)
+#         tokenizer = models[best_f1_scores[target]['model']][1].from_pretrained(pretrained_model_name)  # Fix: ensure correct tokenizer for testing
+#         encoded_test = tokenizer(
+#                                  X_test.tolist(),
+#                                  padding = True,
+#                                  truncation = True,
+#                                  return_tensors = 'pt',
+#                                  )
+# 
+#         test_dataset = TensorDataset(
+#                                      encoded_test['input_ids'],
+#                                      encoded_test['attention_mask'],
+#                                      torch.tensor(y_test),
+#                                      )
+# 
+#         test_loader = DataLoader(
+#                                  test_dataset,
+#                                  batch_size = batch_size,
+#                                  shuffle = False,
+#                                  )
+# 
+#         all_test_predictions, all_test_true_labels = [], []
+# 
+#         with torch.no_grad():
+#             for batch in test_loader:
+#                 input_ids, attention_mask, labels = batch
+# 
+#                 if use_cuda:
+#                     input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
+# 
+#                 outputs = test_model(input_ids, attention_mask = attention_mask)
+#                 logits = outputs.logits
+#                 test_predictions = torch.argmax(logits, dim = 1).tolist()
+#                 all_test_predictions.extend(test_predictions)
+#                 all_test_true_labels.extend(labels.tolist())
+# 
+#         # preformance metrics for held-out d_test_{target} df
+# 
+#         test_f1_macro = f1_score(
+#                                  all_test_true_labels,
+#                                  all_test_predictions,
+#                                  average='macro',
+#                                  )
+# 
+#         test_mcc = matthews_corrcoef(
+#                                      all_test_true_labels,
+#                                      all_test_predictions,
+#                                      )
+# 
+#         test_auprc = average_precision_score(
+#                                              all_test_true_labels,
+#                                              all_test_predictions,
+#                                              average = 'macro',
+#                                              )
+# 
+#         # display
+# 
+#         print(f"Test F1 (macro) for {target}: {test_f1_macro}")
+#         print(f"Test MCC for {target}: {test_mcc}")
+#         print(f"Test AUPRC for {target}: {test_auprc}")
+# 
+#         # store
+# 
+#         results.append({
+#                         'target': target,
+#                         'model': best_f1_scores[target]['model'],
+#                         'fold': 'Test',
+#                         'f1_macro': test_f1_macro,
+#                         'mcc': test_mcc,
+#                         'auprc': test_auprc
+#                         })
+# 
+#     # summarize + return d_{cycle}_performance df
 # 
 #     print("\n--------------------------------------------------------------------------------------")
 #     print(f"Summary")
@@ -564,11 +730,10 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     for target, info in best_f1_scores.items():
 #         print(f"Best F1 (macro) for {target}: {info['score']} achieved by {info['model']}")
 # 
-#     globals()[f'd_{cycle}_performance'] = pd.DataFrame(results)
+#     d_performance = pd.DataFrame(results)
 #     print(f"\nd_{cycle}_performance:")
-#     print(globals()[f'd_{cycle}_performance'].head(5))
-#     globals()[f'd_{cycle}_performance'].to_excel(f'd_{cycle}_performance.xlsx')
-#
+#     print(d_performance.head(5))
+#     d_performance.to_excel(f'{save_path}d_{cycle}_performance.xlsx')
 
 """**_performance_barplot_**"""
 
@@ -711,6 +876,195 @@ Writes and imports preprocess.py, train.py, predict.py.
 # 
 #     return ax
 
+"""**_performance_scatterplot_**"""
+
+# Commented out IPython magic to ensure Python compatibility.
+# %%writefile -a train.py
+# 
+# import seaborn as sns
+# import matplotlib.pyplot as plt
+# import numpy as np
+# import pandas as pd
+# from matplotlib.lines import Line2D
+# 
+# def performance_scatterplot(df, plot_name):
+#     """
+#     Creates a categorical scatterplot with custom aesthetics, markers, error bars, and a legend.
+# 
+#     Parameters:
+#     df (pd.DataFrame): Input dataframe containing columns 'target', 'f1_macro', 'model', and 'fold'.
+# 
+#     plot_name (str): The name used for saving the output plot file (without extension).
+# 
+#     Returns:
+#     --------
+#     Matplotlib Axes object containing the barplot.
+#     """
+# 
+#     # aesthetics
+# 
+#     model_colors = [
+#                     '#87bc45',   # BERT
+#                     '#27aeef',   # RoBERTa
+#                     '#b33dc6',   # DistilBERT
+#                    ]
+# 
+#       ### SJS 10/1: last three colors in "Retro Metro (Default)" https://www.heavy.ai/blog/12-color-palettes-for-telling-better-stories-with-your-data
+# 
+#     sns.set_style(
+#                   style = 'whitegrid',
+#                   rc = None,
+#                   )
+# 
+#     # map target: numeric position
+# 
+#     target_mapping = {
+#                       'asp': 0,
+#                       'dep': 2,
+#                       'val': 4,
+#                       'prg': 6,
+#                       'tgd': 8,
+#                       'age': 10,
+#                       'race': 12,
+#                       'dbty': 14
+#                      }
+# 
+#     df['target_numeric'] = df['target'].map(target_mapping)
+#     df['target_numeric'] = pd.to_numeric(df['target_numeric'])
+# 
+#     # inject noise for jitter
+# 
+#     df['target_jitter'] = df['target_numeric'] + np.random.uniform(
+#                                                                    -0.35,
+#                                                                    0.35,
+#                                                                    size = len(df),
+#                                                                    )
+# 
+#     # plot
+# 
+#     plt.figure(figsize = (12, 5.5))
+# 
+#     # distinguish markers: fold v. held-out test set
+# 
+#     for fold_value, marker in [('Test', 'o'), ('non-Test', '.')]:
+#         if fold_value == 'Test':
+#             data_subset = df[df['fold'] == 'Test']
+#         else:
+#             data_subset = df[df['fold'] != 'Test']
+# 
+#         sns.scatterplot(
+#                         data = data_subset,
+#                         x = 'target_jitter',
+#                         y = 'f1_macro',
+#                         hue = 'model',
+#                         palette = model_colors,
+#                         s = 40,
+#                         alpha = 0.6,
+#                         marker = marker,
+#                        )
+# 
+#     # mean and SD of f1_macro for each target x model
+# 
+#     mean_std_df = df.groupby(['target', 'model']).agg(
+#                                                       mean_f1_macro=('f1_macro', 'mean'),
+#                                                       std_f1_macro=('f1_macro', 'std')
+#                                                       ).reset_index()
+# 
+#     # add target_numeric values to mean_std_df for plotting means and error bars
+# 
+#     mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
+# 
+#     # x-axis offsets
+# 
+#     model_offsets = {
+#                      'bert-base-uncased': -0.3,
+#                      'roberta-base': 0.0,
+#                      'distilbert-base-uncased': 0.3,
+#                      }
+# 
+#     mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['model'].map(model_offsets)
+# 
+#     # means (SDs)
+# 
+#     for model in mean_std_df['model'].unique():
+#         model_data = mean_std_df[mean_std_df['model'] == model]
+# 
+#     # inspect for NaNs
+# 
+#         if not model_data[['target_offset', 'mean_f1_macro', 'std_f1_macro']].isnull().any().any():
+#             plt.errorbar(
+#                          model_data['target_offset'],
+#                          model_data['mean_f1_macro'],
+#                          yerr = model_data['std_f1_macro'],
+#                          fmt = 'D',
+#                          markersize = 6,
+#                          capsize = 0,
+#                          label = f'{model} M (SD)',
+#                          color = model_colors[mean_std_df['model'].unique().tolist().index(model)]
+#                         )
+# 
+#     # x-tick: map to targets
+# 
+#     plt.xticks(
+#                [0, 2, 4, 6, 8, 10, 12, 14],
+#                ['asp', 'dep', 'val', 'prg', 'tgd', 'age', 'race', 'dbty']
+#               )
+# 
+#     # label axes
+# 
+#     plt.ylim(0, 1)
+#     ax = plt.gca()
+#     ax.set_ylabel(
+#                   '$F_1$ (macro)',
+#                   fontsize = 12,
+#                   labelpad = 10,
+#                   )
+# 
+#     ax.set_xlabel(
+#                   'Target',
+#                   fontsize = 12,
+#                   labelpad = 10,
+#                   )
+# 
+#     sns.despine(left = True)
+#     ax.grid(axis = 'x')
+# 
+#     # set line at 0.9 threshold
+# 
+#     ax.axhline(
+#                y = 0.9,
+#                color = 'r',
+#                linewidth = 0.6,
+#                linestyle = '--',
+#                )
+# 
+#     # custom legend
+# 
+#     legend_elements = [
+#                        Line2D([0], [0], marker = 'o', color = 'w', label = 'bert', markersize = 8, markerfacecolor = '#87bc45', lw = 0),
+#                        Line2D([0], [0], marker = 'o', color = 'w', label = 'roberta', markersize = 8, markerfacecolor = '#27aeef', lw = 0),
+#                        Line2D([0], [0], marker = 'o', color = 'w', label = 'distilbert', markersize = 8, markerfacecolor = '#b33dc6', lw = 0),
+#                        Line2D([0], [0], marker = 'D', color = 'black', label = 'M (SD)', markersize = 7, lw = 1, linestyle = '-', markeredgewidth = 1)
+#                       ]
+# 
+#     ax.legend(
+#               handles = legend_elements,
+#               loc = 'upper center',
+#               bbox_to_anchor = (0.5, 1.15),
+#               ncol = 4,
+#               fontsize = 9,
+#               frameon = False,
+#               )
+# 
+#     # save
+# 
+#     file_name = f'{plot_name}_scatter.png'
+#     plt.savefig(file_name)
+# 
+#     # display
+#     plt.show()
+#
+
 """**_iterative_stratified_train_test_split_with_rationales_**"""
 
 # Commented out IPython magic to ensure Python compatibility.
@@ -721,15 +1075,23 @@ Writes and imports preprocess.py, train.py, predict.py.
 # 
 # def iterative_stratified_train_test_split_with_rationales(df, targets, test_size, random_state):
 #     """
-#     Splits df into target-stratified train and test sets for each target in targets list,
-#     partitions 'rationales' (aug = 1) to train set, returns a df dictionary.
+#     Splits df into target-stratified train and test sets for each target in targets list:
+#     d_train_{target}, d_test_{target}, respectively. Partitions 'rationales' (aug = 1) to train
+#     set. Returns a dict with target names as keys
 #     """
-#     results = {}
+# 
+#     # initialize dict
+# 
+#     target_datasets = {}
 # 
 #     for target in targets:
 # 
+#         # create 'targets' col for stratification
+# 
 #         df_target = df.copy()
 #         df_target['targets'] = df[target]
+# 
+#         # split augmented vs. non-augmented rows
 # 
 #         aug_rows = df_target[df_target['aug'] == 1]
 #         non_aug_rows = df_target[df_target['aug'] != 1]
@@ -738,33 +1100,45 @@ Writes and imports preprocess.py, train.py, predict.py.
 #             print(f"No non-augmented rows for target {target}. Skipping...")
 #             continue
 # 
+#         # stratified train-test split on non-augmented rows only
+# 
 #         train_non_aug, test_non_aug = train_test_split(
 #                                                        non_aug_rows,
 #                                                        test_size = test_size,
 #                                                        stratify = non_aug_rows['targets'],
 #                                                        random_state = random_state,
-#                                                        )
+#                                                       )
+# 
+#         # concat augmented rows back into train set
 # 
 #         d_train = pd.concat([train_non_aug, aug_rows])
+# 
+#         # shuffle + reset index: train set
 # 
 #         d_train = d_train.sample(
 #                                  frac = 1,
 #                                  random_state = random_state,
 #                                  ).reset_index(drop = True)
 # 
-#         print("\nVerify: d_train_* 'aug' count")
+#         # retain 'text', 'aug', target cols
+# 
+#         d_train = d_train[['text', 'aug', target]]
+#         d_test = test_non_aug[['text', 'aug', target]]
+# 
+#         # reset index: test set
+# 
+#         d_test = d_test.reset_index(drop = True)
+# 
+#         # add train and test sets as tuples to target_datasets dict
+# 
+#         target_datasets[target] = (d_train, d_test)
+# 
+#         # inspect
+# 
+#         print(f"\nVerify: d_train_{target} 'aug' count")
 #         print(d_train['aug'].value_counts(normalize = False))
-#         print("\nVerify: d_test_* 'aug' count")
-#         print(test_non_aug['aug'].value_counts(normalize = False))
-# 
-#         d_train = d_train.drop('aug', axis = 1)
-#         d_test = test_non_aug.drop('aug', axis = 1)
-# 
-#         d_train = d_train[['text', target]]
-#         d_test = d_test[['text', target]]
-# 
-#         results[f'd_train_{target}'] = d_train
-#         results[f'd_test_{target}'] = d_test
+#         print(f"\nVerify: d_test_{target} 'aug' count")
+#         print(d_test['aug'].value_counts(normalize = False))
 # 
 #         print(f"\n--------------------------------------------------------------------------------------")
 #         print(f"d_train_{target}: Augmented training data for target '{target}'")
@@ -774,14 +1148,14 @@ Writes and imports preprocess.py, train.py, predict.py.
 #         print(d_train.head(6))
 # 
 #         print(f"\n--------------------------------------------------------------------------------------")
-#         print(f"d_test_{target}: De-augmented eval data for target '{target}'")
+#         print(f"d_test_{target}: De-augmented testing data for target '{target}'")
 #         print(f"--------------------------------------------------------------------------------------")
 #         print(d_test.shape)
 #         print(d_test[target].value_counts(normalize = True))
 #         print(d_test.head(6))
 # 
-#     print(f"Final results keys: {list(results.keys())}")
-#     return results
+#     return target_datasets
+#
 
 """**_tune_and_optimize_model_hyperparams_**"""
 
@@ -791,14 +1165,15 @@ Writes and imports preprocess.py, train.py, predict.py.
 # import torch
 # from torch.utils.data import DataLoader, TensorDataset
 # from torch.nn import CrossEntropyLoss
-# from transformers import BertForSequenceClassification, AdamW
+# from transformers import get_linear_schedule_with_warmup
 # from sklearn.metrics import f1_score
 # from sklearn.model_selection import ParameterGrid
 # from tqdm import tqdm
+# import pandas as pd
 # 
-# def tune_and_optimize_model_hyperparams(tokenizer, model_class, pretrained_model_name, d_train, d_test, target, class_weights, save_path):
+# def tune_and_optimize_model_hyperparams(tokenizer, model_class, pretrained_model_name, d_train, d_test, target, class_weights, save_path, hyperparameter_grid):
 #     """
-#     Tune and optimize model hyperparameters.
+#     Tune and optimize model hyperparameters for a specific model-target combination.
 # 
 #     Parameters:
 #     -----------
@@ -818,19 +1193,25 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     d_test : pd.DataFrame
 #         Test dataset.
 # 
-#     target:
-#         Dynamic target variable for classification.
+#     target : str
+#         The target variable for classification.
 # 
-#     class_weights:
+#     class_weights : torch.tensor
 #         Weights for each class.
 # 
-#     save_path:
+#     save_path : str
 #         Path to save the best model.
+# 
+#     hyperparameter_grid : dict
+#         Dictionary where keys are hyperparameter names and values are lists of possible values.
 # 
 #     Returns:
 #     --------
 #     d_test : pd.DataFrame
 #         Test dataset with predictions and probabilities.
+# 
+#     d_tuned_performance : pd.DataFrame
+#         DataFrame with the performance metrics for each hyperparameter configuration.
 #     """
 # 
 #     # check CUDA
@@ -838,42 +1219,15 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     use_cuda = torch.cuda.is_available()
 #     print("CUDA: ", use_cuda)
 # 
+#     # set seed
+# 
+#     set_seed(56)
+# 
 #     print("======================================================================================")
-#     print(f"Optimizing: {pretrained_model_name}\nLabel: {target}")
+#     print(f"Optimizing: {pretrained_model_name}\nTarget: {target}")
 #     print("======================================================================================")
 # 
-#     # define hyperparam grid
-# 
-#     hyperparam_grid = {
-#                   'per_gpu_batch_size': [
-#                                          8,
-#                                          16,
-#                                          ],
-#                   'weight_decay': [
-#                                    0.0,
-#                                    0.3,
-#                                    ],
-#                   'learning_rate': [
-#                                     2e-5,
-#                                     3e-5,
-#                                     5e-5,
-#                                     ],
-#                   'warmup_steps': [
-#                                    0,
-#                                    500,
-#                                    ],
-#                   'num_epochs': [
-#                                  2,
-#                                  3,
-#                                  ]
-#                   }
-# 
-#     # initialize class weights
-# 
-#     if use_cuda:
-#         class_weights = class_weights.cuda()
-# 
-#     # tokenize
+#     # tokenize train and test sets
 # 
 #     encoded_train = tokenizer(
 #                               d_train['text'].tolist(),
@@ -889,15 +1243,18 @@ Writes and imports preprocess.py, train.py, predict.py.
 #                              return_tensors = 'pt',
 #                              )
 # 
+# 
 #     # accept dynamic target variables
 # 
 #     train_labels = torch.tensor(d_train[target].values)
 #     test_labels = torch.tensor(d_test[target].values)
 # 
+#     # prepare datasets
+# 
 #     train_dataset = TensorDataset(
 #                                   encoded_train['input_ids'],
 #                                   encoded_train['attention_mask'],
-#                                   train_labels
+#                                   train_labels,
 #                                   )
 # 
 #     test_dataset = TensorDataset(
@@ -905,6 +1262,23 @@ Writes and imports preprocess.py, train.py, predict.py.
 #                                  encoded_test['attention_mask'],
 #                                  test_labels,
 #                                  )
+# 
+#     #train_loader = DataLoader(
+#     #                          train_dataset,
+#     #                          batch_size = 8,  ### to be updated within grid search
+#     #                          shuffle = True,
+#     #                          )
+# 
+#     #test_loader = DataLoader(
+#     #                         test_dataset,
+#     #                         batch_size = 8,  ### to be updated within grid search
+#     #                         shuffle = False,
+#     #                         )
+# 
+#     # initialize class weights
+# 
+#     if use_cuda:
+#         class_weights = class_weights.cuda()
 # 
 #     # initialize tracking variables
 # 
@@ -915,46 +1289,57 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     best_probabilities = []
 # 
 #     f1_scores = []
-# 
-#     # initialize performance data list
-# 
 #     performance_data = []
 # 
-#     # define gradient accumulation steps
+#     # hyperparam grid search: ParameterGrid
 # 
-#     accumulation_steps = 2
+#     for hyperparams in ParameterGrid(hyperparameter_grid):
+#         print(f"\nOptimizing with hyperparameters: {hyperparams}")
 # 
-#     # grid search
-# 
-#     for hyperparams in ParameterGrid(hyperparam_grid):
 #         train_loader = DataLoader(
 #                                   train_dataset,
-#                                   batch_size = hyperparams['per_gpu_batch_size'],
+#                                   batch_size = hyperparams['batch_size'],
 #                                   shuffle = True
 #                                   )
 #         test_loader = DataLoader(
 #                                  test_dataset,
-#                                  batch_size = hyperparams['per_gpu_batch_size'],
+#                                  batch_size = hyperparams['batch_size'],
 #                                  shuffle = False
 #                                  )
 # 
 #         print(f"\nTotal training rows: {len(train_dataset)}")
 #         print(f"Total evaluation rows: {len(test_dataset)}")
-#         print(f"Training batch size: {hyperparams['per_gpu_batch_size']}")
-#         print(f"Evaluation batch size: {hyperparams['per_gpu_batch_size']}")
+#         print(f"Training batch size: {hyperparams['batch_size']}")
+#         print(f"Evaluation batch size: {hyperparams['batch_size']}")
 #         print(f"Total training batches: {len(train_loader)}")
 #         print(f"Total evaluation batches: {len(test_loader)}")
 #         print("\n")
+# 
+#         # initialize model
 # 
 #         model = model_class.from_pretrained(pretrained_model_name)
 #         if use_cuda:
 #             model.cuda()
 # 
-#         optimizer = AdamW(
-#                           model.parameters(), ### retraining all model params
-#                           lr = hyperparams['learning_rate'],
-#                           weight_decay = hyperparams['weight_decay']
-#                           )
+#         # initialize optimizer and lr scheduler
+# 
+#         optimizer = torch.optim.AdamW(
+#                                       model.parameters(),
+#                                       lr = hyperparams['learning_rate'],
+#                                       weight_decay = hyperparams['weight_decay']
+#                                       )
+# 
+#         # calculate total steps
+# 
+#         total_steps = len(train_loader) * hyperparams['num_epochs']
+# 
+#         # add scheduler with warmup steps
+# 
+#         scheduler = get_linear_schedule_with_warmup(
+#                                                     optimizer,
+#                                                     num_warmup_steps = hyperparams['warmup_steps'],
+#                                                     num_training_steps=total_steps
+#                                                     )
 # 
 #         criterion = CrossEntropyLoss(weight = class_weights)
 # 
@@ -963,19 +1348,17 @@ Writes and imports preprocess.py, train.py, predict.py.
 #         for epoch in range(hyperparams['num_epochs']):
 #             model.train()
 #             optimizer.zero_grad()
-#             for i, batch in enumerate(tqdm(train_loader, desc = f"Training Epoch {epoch + 1}/{hyperparams['num_epochs']}", leave = True)):
+#             for i, batch in enumerate(tqdm(train_loader, desc = f"Training Epoch {epoch + 1}/{hyperparams['num_epochs']}", leave=True)):
 #                 input_ids, attention_mask, labels = batch
 #                 if use_cuda:
 #                     input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-#                 outputs = model(
-#                     input_ids,
-#                     attention_mask = attention_mask
-#                 )
+#                 outputs = model(input_ids, attention_mask=attention_mask)
 #                 loss = criterion(outputs.logits, labels)
-#                 loss = loss / accumulation_steps
+#                 loss = loss / hyperparams['gradient_accumulation_steps']
 #                 loss.backward()
-#                 if (i + 1) % accumulation_steps == 0:
+#                 if (i + 1) % hyperparams['gradient_accumulation_steps'] == 0:
 #                     optimizer.step()
+#                     scheduler.step()  ### update learning rate
 #                     optimizer.zero_grad()
 # 
 #         # eval loop
@@ -985,40 +1368,36 @@ Writes and imports preprocess.py, train.py, predict.py.
 #         all_true_labels = []
 #         all_probabilities = []
 #         with torch.no_grad():
-#             progress_bar = tqdm(total=len(test_loader), desc = "Evaluating", leave = True)
 #             for batch in test_loader:
 #                 input_ids, attention_mask, labels = batch
 #                 if use_cuda:
 #                     input_ids, attention_mask, labels = input_ids.cuda(), attention_mask.cuda(), labels.cuda()
-#                 outputs = model(
-#                     input_ids,
-#                     attention_mask = attention_mask
-#                 )
+#                 outputs = model(input_ids, attention_mask=attention_mask)
 #                 probabilities = torch.softmax(outputs.logits, dim = 1)
 #                 predictions = torch.argmax(probabilities, dim = 1).cpu().tolist()
 #                 all_predictions.extend(predictions)
 #                 all_true_labels.extend(labels.cpu().tolist())
 #                 all_probabilities.extend(probabilities.cpu().tolist())
-#                 progress_bar.update(1)
-#             progress_bar.close()
 # 
-#         current_f1_macro = f1_score(all_true_labels, all_predictions, average = 'macro')
+#         # calculate F1 (macro)
+# 
+#         current_f1_macro = f1_score(all_true_labels, all_predictions, average='macro')
 #         f1_scores.append(current_f1_macro)
-#         print(f"\nCurrent F1 macro for params {hyperparams}: {current_f1_macro}")
+#         print(f"\nCurrent F1 macro with params {hyperparams}: {current_f1_macro}")
 # 
 #         # append F1 and current performance data
 # 
 #         performance_data.append({
-#             'pretrained_model_name': pretrained_model_name,
-#             'target': target,
-#             'f1_score': current_f1_macro,
-#             'per_gpu_batch_size': hyperparams['per_gpu_batch_size'],
-#             'weight_decay': hyperparams['weight_decay'],
-#             'learning_rate': hyperparams['learning_rate'],
-#             'warmup_steps': hyperparams['warmup_steps'],
-#             'num_epochs': hyperparams['num_epochs']
+#                                  'pretrained_model_name': pretrained_model_name,
+#                                  'target': target,
+#                                  'f1_score': current_f1_macro,
+#                                  'batch_size': hyperparams['batch_size'],
+#                                  'weight_decay': hyperparams['weight_decay'],
+#                                  'learning_rate': hyperparams['learning_rate'],
+#                                  'warmup_steps': hyperparams['warmup_steps'],
+#                                  'num_epochs': hyperparams['num_epochs'],
+#                                  'gradient_accumulation_steps': hyperparams['gradient_accumulation_steps'],
 #         })
-# 
 # 
 #         if current_f1_macro > best_f1_macro:
 #             best_f1_macro = current_f1_macro
@@ -1027,11 +1406,14 @@ Writes and imports preprocess.py, train.py, predict.py.
 #             best_predictions = all_predictions
 #             best_probabilities = all_probabilities
 # 
-#     if len(best_predictions) == len(d_test):
-#         d_test['predicted_labels'] = best_predictions
-#         d_test['predicted_probabilities'] = best_probabilities
-#     else:
-#         print("Error: Length of predictions does not match length of test set")
+#     #if len(best_predictions) == len(d_test):
+#     #    d_test['predicted_labels'] = best_predictions
+#     #    d_test['predicted_probabilities'] = best_probabilities
+#     #else:
+#     #    print("Error: Length of predictions does not match length of test set")
+# 
+#     d_test['predicted_labels'] = best_predictions
+#     d_test['predicted_probabilities'] = best_probabilities
 # 
 #     # save d_test_{target} with pred and prob
 # 
@@ -1040,7 +1422,7 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     print("--------------------------------------------------------------------------------------")
 # 
 #     print(d_test.head(6))
-#     d_test.to_excel(f'd_test_tuned_preds_{target}.xlsx')
+#     d_test.to_excel(f'{save_path}/d_test_tuned_preds_{target}.xlsx')
 # 
 #     if best_model_state:
 #         model_path = f"{save_path}/{target}_{pretrained_model_name}_best_tuned_model.bin"
@@ -1058,21 +1440,22 @@ Writes and imports preprocess.py, train.py, predict.py.
 #     # df: target-wise
 # 
 #     d_tuned_performance = pd.DataFrame(performance_data)
-#     print(d_tuned_performance.head(10))  # Preview the first 10 rows of the dataframe
+#     print(d_tuned_performance.head(10))
 # 
 #     # save: target-wise df
 # 
-#     d_tuned_performance.to_excel(f'd_tuned_performance_{target}.xlsx')
+#     d_tuned_performance.to_excel(f'{save_path}/d_tuned_performance_{target}.xlsx')
 # 
 #     return d_test, d_tuned_performance
+#
 
-"""#### predict.py
+"""#### redact.py
 
 **_ner_redact_post_texts_**
 """
 
 # Commented out IPython magic to ensure Python compatibility.
-# %%writefile predict.py
+# %%writefile redact.py
 # 
 # import spacy
 # nlp = spacy.load('en_core_web_lg')
@@ -1107,10 +1490,13 @@ Writes and imports preprocess.py, train.py, predict.py.
 #                                             )
 #     return final_string
 
-"""**_load_model_**"""
+"""#### predict.py
+
+**_load_model_**
+"""
 
 # Commented out IPython magic to ensure Python compatibility.
-# %%writefile -a predict.py
+# %%writefile a predict.py
 # 
 # import torch
 # from torch.utils.data import DataLoader, TensorDataset
@@ -1224,15 +1610,22 @@ from preprocess import (
                         dummy_code_augmented_rows,
                         read_and_append_jsonl_archives,
                         )
-from predict import (
-                     ner_redact_post_texts,
-                     load_model,
-                     preprocess_data,
-                     predict,
-                     )
+
+#from redact import (
+#                    ner_redact_post_texts,
+#                    )
+
+#from predict import (
+#                     load_model,
+#                     preprocess_data,
+#                     predict,
+#                     )
+
 from train import (
+                   set_seed,
                    train_eval_save_bl_models,
                    performance_barplot,
+                   performance_scatterplot,
                    iterative_stratified_train_test_split_with_rationales,
                    tune_and_optimize_model_hyperparams,
                    )
@@ -1315,7 +1708,7 @@ d_annotated[[
               ]].apply(pd.Series.value_counts)
 
 #d.dtypes
-d_annotated.shape
+d_annotated.info()
 d_annotated.head(3)
 
 """$\mathcal{d}$<sub>calibrate</sub> ($n$<sub>posts</sub> = 400)"""
@@ -1398,6 +1791,23 @@ d_augmented.shape
 d_augmented.head(30)
 
 d_augmented.to_excel('d_augmented.xlsx')
+
+d_augmented = pd.read_excel(
+                            'd_augmented.xlsx',
+                            index_col = [0],
+                            )
+
+d_augmented[[
+             'asp',
+             'dep',
+             'val',
+             'prg',
+             'tgd',
+             'age',
+             'race',
+             'dbty',
+             'aug'
+              ]].apply(pd.Series.value_counts)
 
 """#### Append $\mathcal{V}$ corpus, derive $\mathcal{D}$<sub>inference</sub>"""
 
@@ -1774,13 +2184,13 @@ d_augmented.head(3)
 
 targets = [
            'asp',
-           'dep',
-           'val',
-           'prg',
-           'tgd',
-           'age',
-           'race',
-           'dbty',
+#           'dep',
+#           'val',
+#           'prg',
+#           'tgd',
+#           'age',
+#           'race',
+#           'dbty',
            ]
 
 d_augmented = d_augmented[
@@ -1816,47 +2226,80 @@ class_weights
 
 """#### Train and evaluate benchmark models: $k$-fold cross validate"""
 
+# Commented out IPython magic to ensure Python compatibility.
+# %cd /content/drive/My Drive/Colab/bar_policy_suicidality/temp
+
+# define target-specific aug-stratified df
+
+target_datasets = iterative_stratified_train_test_split_with_rationales(
+                                                                        d_augmented,
+                                                                        targets,
+                                                                        random_state = 56,
+                                                                        test_size = 0.2,
+                                                                        )
+
+print(target_datasets.keys())
+
+# define target-specific df
+
+#target_datasets = {
+#                   'asp': (d_train_asp, d_test_asp),
+#                   'dep': (d_train_dep, d_test_dep),
+#                   'val': (d_train_val, d_test_val),
+#                   'prg': (d_train_prg, d_test_prg),
+#                   'tgd': (d_train_tgd, d_test_tgd),
+#                   'age': (d_train_age, d_test_age),
+#                   'race': (d_train_race, d_test_race),
+#                   'dbty': (d_train_dbty, d_test_dbty),
+
+#}
+
+# define targets + class weights
+
 targets_and_class_weights = {
                              'asp': [
                                      0.7657, ### w_neg
                                      1.4410, ### w_pos
                                      ],
-                             'dep': [
-                                     0.5989,
-                                     3.0286,
-                                     ],
-                             'val': [
-                                     0.6876,
-                                     1.8327,
-                                     ],
-                             'prg': [
-                                     0.6024,
-                                     2.9414,
-                                     ],
-                             'tgd': [
-                                     0.5974,
-                                     3.0676,
-                                     ],
-                             'age': [
-                                     0.6303,
-                                     2.4188,
-                                     ],
-                             'race': [
-                                      0.506,
-                                      42.0441,
-                                      ],
-                             'dbty': [
-                                      0.5064,
-                                      39.7083,
-                                      ],
+#                             'dep': [
+#                                     0.5989,
+#                                     3.0286,
+#                                     ],
+#                             'val': [
+#                                     0.6876,
+#                                     1.8327,
+#                                     ],
+#                             'prg': [
+#                                     0.6024,
+#                                     2.9414,
+#                                     ],
+#                            'tgd': [
+#                                     0.5974,
+#                                     3.0676,
+#                                     ],
+#                             'age': [
+#                                     0.6303,
+#                                     2.4188,
+#                                     ],
+#                             'race': [
+#                                      0.506,
+#                                      42.0441,
+#                                      ],
+#                             'dbty': [
+#                                      0.5064,
+#                                      39.7083,
+#                                      ],
                               }
 
+"""**BERT, RoBERTa, DistilBERT**"""
+
+# define models
 
 models = {
           'bert': (
                    BertForSequenceClassification,
                    BertTokenizer,
-                   'bert-base-uncased',
+                  'bert-base-uncased',
                    ),
 
           'roberta': (
@@ -1865,14 +2308,27 @@ models = {
                       'roberta-base',
                       ),
 
-          'distilbert': (
-                         DistilBertForSequenceClassification,
-                         DistilBertTokenizer,
-                         'distilbert-base-uncased',
-                         )
-          }
+#          'distilbert': (
+#                         DistilBertForSequenceClassification,
+#                         DistilBertTokenizer,
+#                         'distilbert-base-uncased',
+#                         ),
+        }
 
 save_path = '/content/drive/MyDrive/Colab/bar_policy_suicidality/outputs/models/'
+
+# define hyperparameter grid
+
+hyperparameter_grid = {
+                       'batch_size': 8,
+                       'gradient_accumulation_steps': 2,
+                       'learning_rate': 2e-5,
+                       'num_epochs': 2,
+                       'warmup_steps': 0,
+                       'weight_decay': 0.00,
+                       }
+
+# set cycle
 
 cycle = 'benchmark'
 
@@ -1881,13 +2337,28 @@ cycle = 'benchmark'
 
 # 'benchmark' cycle: train-test loop
 
-results = train_eval_save_bl_models(
-                                    d_augmented,
-                                    targets_and_class_weights,
-                                    models,
-                                    save_path,
-                                    cycle,
-                                    )
+train_eval_save_bl_models(
+                          target_datasets = target_datasets,
+                          targets_and_class_weights = targets_and_class_weights,
+                          models = models,
+                          save_path = save_path,
+                          cycle = cycle,
+                          hyperparameter_grid = hyperparameter_grid,
+                          )
+
+"""**Llama**"""
+
+##############################################################################
+##############################################################################
+############################################################################## PRELIM
+
+#%pip install llama-stack
+
+!huggingface-cli login --token '<my_token>'
+
+############################################################################## PRELIM
+##############################################################################
+##############################################################################
 
 """**Benchmark: viz**"""
 
@@ -1900,7 +2371,7 @@ results = train_eval_save_bl_models(
 # Commented out IPython magic to ensure Python compatibility.
 # %%capture
 # 
-# d_v = pd.read_excel('d_all_tuned_performance.xlsx')
+# d_v = pd.read_excel('d_benchmark_performance_SHAM.xlsx')
 # d_v.round({'f1_macro': 4, 'mcc': 4, 'auprc': 4})
 
 # Commented out IPython magic to ensure Python compatibility.
@@ -1910,359 +2381,6 @@ performance_barplot(
                     d_v,
                     'benchmark_performance',
                     )
-
-"""#### exploratory: ARMHR viz."""
-
-# Commented out IPython magic to ensure Python compatibility.
-# exploratory: categorical scatterplot
-
-    ### SJS 9/19: function for benchmark + adapted TKTK
-
-# %cd /content/drive/MyDrive/Colab/bar_policy_suicidality/outputs/figures
-
-# aesthetics
-
-model_colors = [
-                'darkviolet',   # BERT
-                'darkcyan', # RoBERTa
-                'seagreen', # DistilBERT
-                 ]
-
-sns.set_style(
-              style = 'whitegrid',
-              rc = None,
-              )
-
-# map target: numeric position
-
-target_mapping = {
-                  'asp': 0,
-                  'dep': 2,
-                  'val': 4,
-                  'prg': 6,
-                  'tgd': 8,
-                  'age': 10,
-                  'race': 12,
-                  'dbty': 14
-                  }
-
-d_v['target_numeric'] = d_v['target'].map(target_mapping)
-
-# convert 'target_numeric' to numeric dtype
-
-d_v['target_numeric'] = pd.to_numeric(d_v['target_numeric'])
-
-# inject noise for jitter
-
-d_v['target_jitter'] = d_v['target_numeric'] + np.random.uniform(-0.35, 0.35, size=len(d_v))
-
-# plot
-
-plt.figure(figsize=(
-                    12,
-                    5.5,
-                    )
-
-           )
-
-ax = sns.scatterplot(
-                     data = d_v,
-                     x = 'target_jitter',
-                     y = 'f1_macro',
-                     hue = 'model',
-                     palette = model_colors,
-                     s = 40,
-                     alpha = 0.6,
-                     )
-
-# mean and SD of f1_macro for each target x model
-
-mean_std_df = d_v.groupby(['target', 'model']).agg(
-                                                   mean_f1_macro=('f1_macro', 'mean'),
-                                                   std_f1_macro=('f1_macro', 'std'),
-                                                   ).reset_index()
-
-# add target_numeric values to mean_std_df for plotting means and error bars
-
-mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
-
-# x-axis offsets
-
-model_offsets = {
-                 'bert': -0.2,
-                 'roberta': 0.0,
-                 'distilbert': 0.2
-                  }
-
-mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['model'].map(model_offsets)
-
-# means (SDs)
-
-for model in mean_std_df['model'].unique():
-    model_data = mean_std_df[mean_std_df['model'] == model]
-    plt.errorbar(model_data['target_offset'], model_data['mean_f1_macro'],
-                 yerr=model_data['std_f1_macro'], fmt='D', markersize=7,
-                 capsize=5, label=f'{model} mean', color=model_colors[mean_std_df['model'].unique().tolist().index(model)])
-
-# x-tick: map to targets
-
-plt.xticks([0, 2, 4, 6, 8, 10, 12, 14], ['asp', 'dep', 'val', 'prg', 'tgd', 'age', 'race', 'dbty'])
-
-# label axes
-
-plt.ylim(
-         0,
-         1,
-          )
-
-# legend
-
-ax.legend(
-          loc = 9,
-          bbox_to_anchor = (
-                            0.46,
-                            1.14,
-                            ),
-          ncol = 6,
-          #fancybox = True,
-          #shadow = True
-          fontsize = 9,
-          title = None,
-          frameon = False,
-          )
-
-# labels
-
-ax.set_ylabel(
-              '$F_1$ (macro)',
-              fontsize = 12,
-              labelpad = 10,
-              )
-
-ax.set_xlabel(
-              'Target',
-              fontsize = 12,
-              labelpad = 10,
-              )
-
-sns.despine(
-            left = True,
-            )
-
-ax.grid(axis='x')
-
-# set line at 0.9 threshold
-
-ax.axhline(
-            y = 0.9,
-            color = 'r',
-            #label = '0.9',
-            linewidth = 0.6,
-            linestyle = '--',
-            )
-
-# save
-
-plot_name = 'adapted_performance'
-
-file_name = f'{plot_name}_scatter.png'
-plt.savefig(file_name)
-
-# display
-
-plt.show()
-
-# Commented out IPython magic to ensure Python compatibility.
-# exploratory: categorical scatterplot
-
-    ### SJS 9/20: adapted for _tuned_ performance
-
-# %cd /content/drive/MyDrive/Colab/bar_policy_suicidality/outputs/figures
-
-# aesthetics
-
-model_colors = [
-                'darkviolet',   # BERT
-                'darkcyan', # RoBERTa
-                #'seagreen', # DistilBERT
-                 ]
-
-sns.set_style(
-              style = 'whitegrid',
-              rc = None,
-              )
-
-# map target: numeric position
-
-target_mapping = {
-                  'asp': 0,
-                  'dep': 2,
-                  'val': 4,
-                  'prg': 6,
-                  'tgd': 8,
-                  #'age': 10,
-                  #'race': 12,
-                  #'dbty': 14
-                  }
-
-d_v['target_numeric'] = d_v['target'].map(target_mapping)
-
-# convert 'target_numeric' to numeric dtype
-
-d_v['target_numeric'] = pd.to_numeric(d_v['target_numeric'])
-
-# inject noise for jitter
-
-d_v['target_jitter'] = d_v['target_numeric'] + np.random.uniform(-0.35, 0.35, size=len(d_v))
-
-# plot
-
-plt.figure(figsize=(
-                    12,
-                    5.5,
-                    )
-
-           )
-
-ax = sns.scatterplot(
-                     data = d_v,
-                     x = 'target_jitter',
-                     y = 'f1_score',
-                     hue = 'pretrained_model_name',
-                     palette = model_colors,
-                     s = 40,
-                     alpha = 0.5,
-                     )
-
-# mean and SD of f1_macro for each target x model
-
-mean_std_df = d_v.groupby(['target', 'pretrained_model_name']).agg(
-                                                                   mean_f1_macro=('f1_score', 'mean'),
-                                                                   std_f1_macro=('f1_score', 'std'),
-                                                                   ).reset_index()
-
-# add target_numeric values to mean_std_df for plotting means and error bars
-
-mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
-
-# x-axis offsets
-
-model_offsets = {
-                 'bert-base-uncased': -0.0,
-                 'roberta-base': 0.0,
-                 #'distilbert': 0.2
-                  }
-
-mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['pretrained_model_name'].map(model_offsets)
-
-# means (standard deviations)
-
-#for model in mean_std_df['pretrained_model_name'].unique():
-#    model_data = mean_std_df[mean_std_df['pretrained_model_name'] == model]
-#    plt.errorbar(model_data['target_offset'], model_data['mean_f1_macro'],
-#                 yerr=model_data['std_f1_macro'], fmt='D', markersize=7,
-#                 capsize=5, label=f'{model} mean', color=model_colors[mean_std_df['pretrained_model_name'].unique().tolist().index(model)])
-
-for model in mean_std_df['pretrained_model_name'].unique():
-    model_data = mean_std_df[mean_std_df['pretrained_model_name'] == model]
-
-    # inspect for NaNs
-
-    if not model_data[['target_offset', 'mean_f1_macro', 'std_f1_macro']].isnull().any().any():
-        plt.errorbar(model_data['target_offset'], model_data['mean_f1_macro'],
-                     yerr=model_data['std_f1_macro'], fmt='D', markersize=7,
-                     capsize=5, label=f'{model} mean',
-                     color=model_colors[mean_std_df['pretrained_model_name'].unique().tolist().index(model)])
-
-print(mean_std_df.head())
-
-# x-tick: map to targets
-
-plt.xticks(
-           [
-               0,
-               2,
-               4,
-               6,
-               8,
-               #10,
-               #12,
-               #14,
-               ],
-                [
-                    'asp',
-                    'dep',
-                    'val',
-                    'prg',
-                    'tgd',
-                    #'age',
-                    #'race',
-                    #'dbty',
-                    ])
-
-# label axes
-
-plt.ylim(
-         0,
-         1,
-          )
-
-# legend
-
-ax.legend(
-          loc = 9,
-          bbox_to_anchor = (
-                            0.46,
-                            1.14,
-                            ),
-          ncol = 6,
-          #fancybox = True,
-          #shadow = True
-          fontsize = 9,
-          title = None,
-          frameon = False,
-          )
-
-# labels
-
-ax.set_ylabel(
-              '$F_1$ (macro)',
-              fontsize = 12,
-              labelpad = 10,
-              )
-
-ax.set_xlabel(
-              'Target',
-              fontsize = 12,
-              labelpad = 10,
-              )
-
-sns.despine(
-            left = True,
-            )
-
-ax.grid(axis='x')
-
-# set line at 0.9 threshold
-
-ax.axhline(
-            y = 0.9,
-            color = 'r',
-            #label = '0.9',
-            linewidth = 0.6,
-            linestyle = '--',
-            )
-
-# save
-
-plot_name = 'tuned_performance'
-
-file_name = f'{plot_name}_scatter.png'
-plt.savefig(file_name)
-
-# display
-
-plt.show()
 
 """#### Adapt"""
 
@@ -2537,11 +2655,11 @@ Builds stratified train-test sets, searches hyperparam space to optimize highest
 d_augmented = pd.read_excel('d_augmented.xlsx')
 
 targets = [
-#           'asp',
-#           'dep',
+           'asp',
+           'dep',
 #           'val',
 #           'prg',
-           'tgd',
+#           'tgd',
 #           'age',
 #           'race',
 #           'dbty',
@@ -2561,51 +2679,54 @@ d_augmented.head(3)
 
 """**Target-parsed $\mathcal{d}$<sub>train</sub>($y$): augmented | $\mathcal{d}$<sub>test</sub>($y$): de-augmented**"""
 
-d_dict = iterative_stratified_train_test_split_with_rationales(
+target_datasets = iterative_stratified_train_test_split_with_rationales(
                                                                d_augmented,
                                                                targets,
                                                                random_state = 56,
                                                                test_size = 0.2,
                                                                )
 
-print(d_dict.keys())
+print(target_datasets.keys())
 
-# Commented out IPython magic to ensure Python compatibility.
-# %pwd
+# drop 'aug' + extract target-wise train/test df
 
-# extract target-wise train/test df
+#for target, (d_train, d_test) in target_datasets.items():
 
-for target in targets:
-    d_train_name = f'd_train_{target}'
-    d_test_name = f'd_test_{target}'
+        # Drop the 'aug' column from both train and test datasets
+#    if 'aug' in d_train.columns:
+#        d_train = d_train.drop(columns=['aug'])
+#    if 'aug' in d_test.columns:
+#        d_test = d_test.drop(columns=['aug'])
 
-    globals()[d_train_name] = d_dict.get(d_train_name)
-    globals()[d_test_name] = d_dict.get(d_test_name)
+        # Update the dictionary with the modified dataframes
+d_train_asp, d_test_asp = target_datasets['asp']
+d_train_dep, d_test_dep = target_datasets['dep']
 
-    # save to temp
+d_train_asp = d_train_asp.drop('aug', axis = 1)
+d_test_asp = d_test_asp.drop('aug', axis = 1)
 
-    if globals()[d_train_name] is not None:
-        globals()[d_train_name].to_excel(f'{d_train_name}.xlsx', index=False)
-        print(f"Saved {d_train_name}.xlsx")
+d_train_asp.head(3)
+d_test_asp.head(3)
 
-    if globals()[d_test_name] is not None:
-        globals()[d_test_name].to_excel(f'{d_test_name}.xlsx', index=False)
-        print(f"Saved {d_test_name}.xlsx")
+d_train_dep = d_train_dep.drop('aug', axis = 1)
+d_test_dep = d_test_dep.drop('aug', axis = 1)
 
-    # inspect
-
-    if globals()[d_train_name] is not None:
-        print(f"\n{d_train_name} DataFrame:")
-        print(globals()[d_train_name].head())
-        print("\n")
-
-    if globals()[d_test_name] is not None:
-        print(f"\n{d_test_name} DataFrame:")
-        print(globals()[d_test_name].head())
-        print("\n")
+d_train_dep.head(3)
+d_test_dep.head(3)
 
 # Commented out IPython magic to ensure Python compatibility.
 # %cd ../../outputs/tables
+
+# define hyperparameter grid
+
+hyperparameter_grid = {
+                       'batch_size': [8, 16],
+                       'gradient_accumulation_steps': [1, 2],
+                       'learning_rate': [2e-5, 3e-5],
+                       'num_epochs': [2, 3],
+                       'warmup_steps': [0, 500],
+                       'weight_decay': [0.0, 0.3],
+                       }
 
 models_path = '/content/drive/MyDrive/Colab/bar_policy_suicidality/outputs/models'
 
@@ -2617,35 +2738,35 @@ params = [
 
     # asp: Best F1 (macro) for asp: 0.2162 achieved by bert - benchmark
 
-#          {
-#           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
-#           'model_class': BertForSequenceClassification,
-#           'pretrained_model_name': 'bert-base-uncased',
-#           'd_train': d_train_asp,
-#           'd_test': d_test_asp,
-#           'target': 'asp',
-#           'class_weights': torch.tensor([
-#                                          0.7657, ### w_neg
-#                                          1.4410, ### w_pos
-#                                          ], dtype = torch.float),
-#           'save_path': models_path,
-#           },
+          {
+           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
+           'model_class': BertForSequenceClassification,
+           'pretrained_model_name': 'bert-base-uncased',
+           'd_train': d_train_asp,
+           'd_test': d_test_asp,
+           'target': 'asp',
+           'class_weights': torch.tensor([
+                                          0.7657, ### w_neg
+                                          1.4410, ### w_pos
+                                          ], dtype = torch.float),
+           'save_path': models_path,
+           },
 
     # dep: Best F1 (macro) for dep: 0.6857 achieved by bert - benchmark
 
-#          {
-#           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
-#           'model_class': BertForSequenceClassification,
-#           'pretrained_model_name': 'bert-base-uncased',
-#           'd_train': d_train_dep,
-#           'd_test': d_test_dep,
-#           'target': 'dep',
-#           'class_weights': torch.tensor([
-#                                          0.5989,
-#                                          3.0286,
-#                                          ], dtype = torch.float),
-#           'save_path': models_path,
-#           },
+          {
+           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
+           'model_class': BertForSequenceClassification,
+           'pretrained_model_name': 'bert-base-uncased',
+           'd_train': d_train_dep,
+           'd_test': d_test_dep,
+           'target': 'dep',
+           'class_weights': torch.tensor([
+                                          0.5989,
+                                          3.0286,
+                                          ], dtype = torch.float),
+           'save_path': models_path,
+           },
 
     # val: Best F1 (macro) for val: 0.6259 achieved by roberta - roberta
 
@@ -2680,19 +2801,19 @@ params = [
 
     # tgd: Best F1 (macro) for tgd: 0.7414 achieved by bert
 
-          {
-           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
-           'model_class': BertForSequenceClassification,
-           'pretrained_model_name': 'bert-base-uncased',
-           'd_train': d_train_tgd,
-           'd_test': d_test_tgd,
-           'target': 'tgd',
-           'class_weights': torch.tensor([
-                                          0.5974,
-                                          3.0676,
-                                          ], dtype = torch.float),
-           'save_path': models_path,
-           },
+#          {
+#           'tokenizer': BertTokenizer.from_pretrained('bert-base-uncased'),
+#           'model_class': BertForSequenceClassification,
+#           'pretrained_model_name': 'bert-base-uncased',
+#           'd_train': d_train_tgd,
+#           'd_test': d_test_tgd,
+#           'target': 'tgd',
+#           'class_weights': torch.tensor([
+#                                          0.5974,
+#                                          3.0676,
+#                                          ], dtype = torch.float),
+#           'save_path': models_path,
+#           },
 
 ]
 
@@ -2704,15 +2825,16 @@ all_tuned_performance = pd.DataFrame()
 for p in params:
     #print(f"Inspecting parameter set: {p}")  # inspect for dict format
     d_test, d_tuned_performance = tune_and_optimize_model_hyperparams(
-                                                 tokenizer = p['tokenizer'],
-                                                 model_class = p['model_class'],
-                                                 pretrained_model_name = p['pretrained_model_name'],
-                                                 d_train = p['d_train'],
-                                                 d_test = p['d_test'],
-                                                 target = p['target'],
-                                                 class_weights = p['class_weights'],
-                                                 save_path = p['save_path']
-                                                 )
+                                                                      tokenizer = p['tokenizer'],
+                                                                      model_class = p['model_class'],
+                                                                      pretrained_model_name = p['pretrained_model_name'],
+                                                                      d_train = p['d_train'],
+                                                                      d_test = p['d_test'],
+                                                                      target = p['target'],
+                                                                      class_weights = p['class_weights'],
+                                                                      save_path = p['save_path'],
+                                                                      hyperparameter_grid = hyperparameter_grid,
+                                                                      )
 
     all_tuned_performance = pd.concat([all_tuned_performance, d_tuned_performance], ignore_index = True)
 
@@ -2875,11 +2997,14 @@ d_inference.to_csv('d_inference_pred_armhr.csv')
 """### 7. Explain"""
 
 # Commented out IPython magic to ensure Python compatibility.
+# %pwd
+
+# Commented out IPython magic to ensure Python compatibility.
 # %cd inputs/data
 
 ### SJS 9/20: Fx TKTK to parsimoniously explain over targets - _or_ multilabel/ensemble...
 
-d_inference = pd.read_csv('d_inference_pred.csv')
+d_inference = pd.read_csv('d_inference_pred_armhr.csv')
 d_inference.drop(
                  'Unnamed: 0',
                  axis = 1,
@@ -2896,7 +3021,7 @@ d_inference.head(3)
 
 # extract pos proba
 
-#d_inference['asp_prob'] = d_inference['asp_prob'].apply(lambda i: ast.literal_eval(i))
+d_inference['asp_prob'] = d_inference['asp_prob'].apply(lambda i: ast.literal_eval(i))
 d_inference['asp_pos'] = d_inference['asp_prob'].apply(lambda i: round(i[1], 4))
 
 #d_inference.head()
@@ -2957,7 +3082,14 @@ pos_index
 # 
 # # initialize explainer
 # 
-# explainer = LimeTextExplainer(class_names = class_names)
+# ### SJS 9/27: re 'bow' and 'char_level' params: https://lime-ml.readthedocs.io/en/latest/lime.html
+# 
+# explainer = LimeTextExplainer(
+#                               class_names = class_names,
+#                               random_state = 56,
+#                               #bow = False,
+#                               #char_level = True,
+#                               )
 # 
 # # illustrative string - toy ex
 # 
@@ -2969,7 +3101,7 @@ pos_index
 # 
 # # d_inference selection
 # 
-# pos_instance = 101
+# pos_instance = 51
 # text = d_inference.loc[pos_instance, 'text']
 # 
 # # explain
@@ -2991,7 +3123,7 @@ exp.show_in_notebook(text = True)
 
 # Commented out IPython magic to ensure Python compatibility.
 # %cd /content/drive/My Drive/Colab/bar_policy_suicidality/outputs/figures
-exp.save_to_file('lime_explanation_asp_101.html')
+exp.save_to_file('lime_explanation_asp_51.html')
 
 """#### _$\hat{s}$_<sub>2</sub>: dep clr
 
