@@ -13,7 +13,7 @@ _WIP - NOT FOR DISTRIBUTION_
 _Imports, re-indexes by date, cleans, reduces, restricts by timeframe; permits regex pattern-matched purposive (Wave 1) and random (Wave 2) sampling and named entity redaction of PushShift/Arctic Shift .jsonl Reddit archives for .xlsx annotation. Computes Cohen's Kappa post-annotation. Performs LLM-assisted per-tag triangulation of annotation discrepancies._
 
 > aim_i_annotate_triangulate_iaa.ipynb<br>
-> Simone J. Skeen (10-04-2024)
+> Simone J. Skeen (10-07-2024)
 
 1. [Prepare](#scrollTo=R4qNxJPa9Cmq)
 2. [Write](#scrollTo=WTtuLBqA-z6Q)
