@@ -4,6 +4,8 @@
 
 This study examines contemporary American bodily autonomy reversal (BAR) policymaking, unwinding access to abortion and gender-affirming healthcare, as a time-variant driver of SI. Leveraging I.) Transformer-based pretrained language models; II.) time series and event study estimation, and III.) reflexive thematic analysis, with ~1M Reddit submissions by BAR-targeted post authors, the collective suicidogenic toll of BAR anticipation and enactment will be modeled among cisgender women, transgender, gender-diverse, and all pregnancy-capable people.
 
+## Pre-analysis plan
+A pre-analysis plan is preregistered on the Open Science Framework at tk.
 
 
 
