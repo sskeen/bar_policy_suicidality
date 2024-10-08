@@ -10,4 +10,4 @@ A pre-analysis plan is preregistered on the Open Science Framework at tk.
 
 
 [^1]: Mirrors the language at https://osf.io/z2wra/
-[^2]: White J. What can critical suicidology do? Death Stud. 2017;41(8):472-480. [doi: 10.1080/07481187.2017.1332901](https://doi.org/10.1080/07481187.2017.1332901)
+[^2]: White J. What can critical suicidology do? _Death Stud._ 2017;41(8):472-480. [doi: 10.1080/07481187.2017.1332901](https://doi.org/10.1080/07481187.2017.1332901)
