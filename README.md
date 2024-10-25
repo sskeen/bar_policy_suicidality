@@ -7,8 +7,8 @@ This study models contemporary American bodily autonomy reversal (BAR) policymak
 
 ## Pre-analysis plan
 
-A pre-analysis plan is filed on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/)
+A pre-analysis plan is filed on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/).
 
-[^1]: Mirrors the language at [osf.io/crvs5/](https://osf.io/z2wra/)
+[^1]: Mirrors the language at [osf.io/crvs5/](https://osf.io/z2wra/).
 
 [^2]: White J. What can critical suicidology do? _Death Stud._ 2017;41(8):472-480. [doi: 10.1080/07481187.2017.1332901](https://doi.org/10.1080/07481187.2017.1332901)
