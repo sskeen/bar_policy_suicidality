@@ -344,11 +344,19 @@ def train_eval_save_bl_models(target_datasets, targets_and_class_weights, models
 
         print(f"\nTest on held-out d_test_{target} using the best {best_f1_scores[target]['model']} model")
         print("--------------------------------------------------------------------------------------")
+
         test_model = best_f1_scores[target]['model_instance']
         test_model.eval()
 
         #tokenizer = tokenizer_class.from_pretrained(pretrained_model_name)
-        tokenizer = models[best_f1_scores[target]['model']][1].from_pretrained(pretrained_model_name)  # Fix: ensure correct tokenizer for testing
+        #tokenizer = models[best_f1_scores[target]['model']][1].from_pretrained(pretrained_model_name) 
+
+        # ensure correct tokenizer for testing
+        
+        best_model_name = best_f1_scores[target]['model']  # Retrieve the name of the best model
+        best_pretrained_model_name = models[best_model_name][2]  # Retrieve the correct pretrained model name
+        tokenizer = models[best_model_name][1].from_pretrained(best_pretrained_model_name)  # Use correct tokenizer class
+
         encoded_test = tokenizer(
                                  X_test.tolist(),
                                  padding = True,
