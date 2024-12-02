@@ -24,7 +24,7 @@ def calculate_kappa_by_cycle(cycle_num):
     d_sd = pd.read_excel(f'd_cycle{cycle_num}_sd.xlsx', index_col = [0])
     d_sd.columns = [f'{col}_sd' for col in d_sd.columns]
 
-    d_ss = pd.read_excel(f'd_cycle_{cycle_num}_ss.xlsx', index_col = [0])
+    d_ss = pd.read_excel(f'd_cycle{cycle_num}_ss.xlsx', index_col = [0])
     d_ss.columns = [f'{col}_ss' for col in d_ss.columns]
 
     # merge
