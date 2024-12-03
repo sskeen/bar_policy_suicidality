@@ -162,7 +162,7 @@ def train_and_evaluate_llama(target_datasets, targets_and_class_weights, model_n
 
     # HF login
 
-    login(token = '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')
+    login(token = '')
 
     # initialize performance df
 
@@ -408,7 +408,7 @@ def tune_and_optimize_llama_hyperparams(target_datasets, targets_and_class_weigh
 
     # HF login
 
-    login(token = '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')
+    login(token = '')
 
     # initialize performance df
 
