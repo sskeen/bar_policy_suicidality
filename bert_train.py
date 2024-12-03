@@ -60,7 +60,7 @@ def train_eval_save_bl_models(target_datasets, targets_and_class_weights, models
         The path where the best models will be saved.
 
     cycle : str
-        The cycle identifier: 'benchmark', indicating performance with default params; 'adapted', indicating performance
+        The cycle identifier: 'baseline', indicating performance with prespecified default params; 'adapted', indicating performance
         with in-domain adapted params.
 
     hyperparameter_grid : dict
@@ -349,10 +349,10 @@ def train_eval_save_bl_models(target_datasets, targets_and_class_weights, models
         test_model.eval()
 
         #tokenizer = tokenizer_class.from_pretrained(pretrained_model_name)
-        #tokenizer = models[best_f1_scores[target]['model']][1].from_pretrained(pretrained_model_name) 
+        #tokenizer = models[best_f1_scores[target]['model']][1].from_pretrained(pretrained_model_name)
 
         # ensure correct tokenizer for testing
-        
+
         best_model_name = best_f1_scores[target]['model']  # Retrieve the name of the best model
         best_pretrained_model_name = models[best_model_name][2]  # Retrieve the correct pretrained model name
         tokenizer = models[best_model_name][1].from_pretrained(best_pretrained_model_name)  # Use correct tokenizer class
@@ -441,147 +441,12 @@ def train_eval_save_bl_models(target_datasets, targets_and_class_weights, models
     print(d_performance.head(5))
     d_performance.to_excel(f'{save_path}d_{cycle}_performance.xlsx')
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-def performance_barplot(df, plot_name):
-    """
-    Creates a barplot based on train_eval_save_bl_models d_{cycle}_performance output.
-
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        The input dataframe that should contain columns 'target', 'f1_macro', and 'model'.
-
-    plot_name : str
-        The name of the dataframe (used for naming the saved file).
-
-    Returns:
-    --------
-    Matplotlib Axes object containing the barplot.
-    """
-
-    model_colors = [
-                    'paleturquoise',   # BERT
-                    'palegreen', # RoBERTa
-                    'lightpink', # DistilBERT
-                    ]
-
-    fig, ax = plt.subplots(
-                           figsize=(
-                                    14,   # width
-                                    5.5,   # height
-                                    )
-                           )
-
-
-    ax = sns.barplot(
-                     data = df,
-                     x = 'target',
-                     y = 'f1_macro',
-                     hue = 'model',
-                     saturation = 0.75,
-                     dodge = 'auto',
-                     palette = model_colors,
-                     linewidth = 0.5,
-                     alpha = 0.8,
-                     #edgecolor = 'gray',
-                     errcolor = 'darkgray',
-                     errwidth = 0.60,
-                     capsize = 0.04,
-                     )
-
-    # legend
-
-    ax.legend(
-              loc = 'upper left',
-              bbox_to_anchor = (
-                                0.35,
-                                1.1,
-                                ),
-              ncol = 3,
-              #fancybox = True,
-              #shadow = True
-              title = None,
-              frameon = False,
-              )
-
-    plt.ylim(
-             0,
-             1,
-             )
-
-    sns.set_style(
-                  style = 'whitegrid',
-                  rc = None,
-                  )
-
-    sns.despine(
-                left = True,
-                )
-
-
-    # label axes
-
-    ax.set_ylabel(
-                  '$F_1$ (macro)',
-                  fontsize = 14,
-                  labelpad = 10,
-                  )
-
-    ax.set_xlabel(
-                  'Target',
-                  fontsize = 14,
-                  labelpad = 10,
-                  )
-
-    plt.setp(ax.get_legend().get_texts(), fontsize = 12)
-    plt.yticks(fontsize = 12)
-
-    ax.set_xticklabels(
-                       labels = [
-                                 'asp',
-                                 'dep',
-                                 'val',
-                                 'prg',
-                                 'tgd',
-                                 'age',
-                                 'race',
-                                 'dbty',
-                                ],
-                        #rotation = 45,
-                        horizontalalignment = 'right',
-                        fontsize = '12',
-                        )
-
-    # label bars
-
-    for i in ax.containers:
-        ax.bar_label(
-                     i,
-                     fmt = '%.2f',
-                     label_type = 'edge',
-                     #color = 'red',
-                     rotation = 45,
-                     fontsize = 8,
-                     padding = 5,
-                     )
-    # save
-
-    file_name = f'{plot_name}_bar.png'
-    plt.savefig(file_name)
-
-    # display
-
-    plt.show()
-
-    return ax
-
-import seaborn as sns
+from brokenaxes import brokenaxes
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
+import seaborn as sns
 
 def performance_scatterplot(df, plot_name):
     """
@@ -600,9 +465,9 @@ def performance_scatterplot(df, plot_name):
     # aesthetics
 
     model_colors = [
-                    '#87bc45',   # BERT
-                    '#27aeef',   # RoBERTa
-                    '#b33dc6',   # DistilBERT
+                    '#87bc45',
+                    '#b33dc6',
+                    '#27aeef',
                    ]
 
       ### SJS 10/1: last three colors in "Retro Metro (Default)" https://www.heavy.ai/blog/12-color-palettes-for-telling-better-stories-with-your-data
@@ -636,51 +501,99 @@ def performance_scatterplot(df, plot_name):
                                                                    size = len(df),
                                                                    )
 
-    # plot
+    # initialize fig. with broken y-axis
 
-    plt.figure(figsize = (12, 5.5))
+    fig = plt.figure(figsize=(12, 5.5))
+    bax = brokenaxes(
+                     ylims = ((0, 0.1), (0.4, 1)), ### y-axis bounds
+                     hspace = 0.1, ### y-axis break space
+                     )
+
+    # define colors: held-out test set ('fold' = Test)
+
+    test_colors = {
+                   'bert': '#87bc45',
+                   'roberta': '#27aeef',
+                   'distilbert': '#b33dc6',
+                   }
 
     # distinguish markers: fold v. held-out test set
 
     for fold_value, marker in [('Test', 'o'), ('non-Test', '.')]:
         if fold_value == 'Test':
-            data_subset = df[df['fold'] == 'Test']
-        else:
-            data_subset = df[df['fold'] != 'Test']
+            data_subset = d_v[d_v['fold'] == 'Test']
 
-        sns.scatterplot(
-                        data = data_subset,
-                        x = 'target_jitter',
-                        y = 'f1_macro',
-                        hue = 'model',
-                        palette = model_colors,
-                        s = 40,
-                        alpha = 0.6,
-                        marker = marker,
-                       )
+            for model in data_subset['model'].unique():
+                model_data = data_subset[data_subset['model'] == model]
+                bax.scatter(
+                            model_data['target_jitter'],
+                            model_data['f1_macro'],
+                            color = test_colors[model],
+                            s = 40,
+                            alpha = 0.6,
+                            label = None,
+                            marker = marker,
+                            )
+        else:
+            data_subset = d_v[d_v['fold'] != 'Test']
+            for model, color in test_colors.items():
+                model_data = data_subset[data_subset['model'] == model]
+                bax.scatter(
+                            model_data['target_jitter'],
+                            model_data['f1_macro'],
+                            color = color,
+                            s = 40,
+                            alpha = 0.6,
+                            label = None,
+                            marker = marker,
+                            )
+
+#    for fold_value, marker in [('Test', 'o'), ('non-Test', '.')]:
+#        if fold_value == 'Test':
+#            data_subset = df[df['fold'] == 'Test']
+#        else:
+#            data_subset = df[df['fold'] != 'Test']
+
+#        sns.scatterplot(
+#                        data = data_subset,
+#                        x = 'target_jitter',
+#                        y = 'f1_macro',
+#                        hue = 'model',
+#                        palette = model_colors,
+#                        s = 40,
+#                        alpha = 0.6,
+#                        marker = marker,
+#                       )
 
     # mean and SD of f1_macro for each target x model
 
     mean_std_df = df.groupby(['target', 'model']).agg(
-                                                      mean_f1_macro=('f1_macro', 'mean'),
-                                                      std_f1_macro=('f1_macro', 'std')
+                                                      mean_f1_macro = ('f1_macro', 'mean'),
+                                                      std_f1_macro = ('f1_macro', 'std'),
                                                       ).reset_index()
 
     # add target_numeric values to mean_std_df for plotting means and error bars
 
-    mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
+    #mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
 
     # x-axis offsets
 
-    model_offsets = {
-                     'bert-base-uncased': -0.3,
-                     'roberta-base': 0.0,
-                     'distilbert-base-uncased': 0.3,
-                     }
+    mean_std_df['target_numeric'] = mean_std_df['target'].map(target_mapping).astype(float)
+    mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['model'].map(
+                                                                                            {'bert': -0.3,
+                                                                                             'roberta': 0.0,
+                                                                                             'distilbert': 0.3}
+                                                                                            )
 
-    mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['model'].map(model_offsets)
+    #model_offsets = {
+    #                 'bert-base-uncased': -0.3,
+    #                 'roberta-base': 0.0,
+    #                 'distilbert-base-uncased': 0.3,
+    #                 }
 
-    # means (SDs)
+    #mean_std_df['target_offset'] = mean_std_df['target_numeric'] + mean_std_df['model'].map(model_offsets)
+
+    # means (SDs), error bars
 
     for model in mean_std_df['model'].unique():
         model_data = mean_std_df[mean_std_df['model'] == model]
@@ -693,46 +606,79 @@ def performance_scatterplot(df, plot_name):
                          model_data['mean_f1_macro'],
                          yerr = model_data['std_f1_macro'],
                          fmt = 'D',
-                         markersize = 6,
+                         markersize = 7,
                          capsize = 0,
-                         label = f'{model} M (SD)',
-                         color = model_colors[mean_std_df['model'].unique().tolist().index(model)]
+                         elinewidth = 1,
+                         markeredgewidth = 1,
+                         color = test_colors[model]
                         )
 
     # x-tick: map to targets
 
-    plt.xticks(
-               [0, 2, 4, 6, 8, 10, 12, 14],
-               ['asp', 'dep', 'val', 'prg', 'tgd', 'age', 'race', 'dbty']
-              )
+    bax.set_xlabel(
+                   'Target',
+                   fontsize = 12,
+                   labelpad = 30,
+                   )
+
+    bax.set_ylabel(
+                   f'$F_1$ (macro): {plot_name}',
+                   fontsize = 12,
+                   labelpad = 30,
+                   )
+
+    # x-tick: label lower axis
+
+    bax.axs[1].set_xticks(list(target_mapping.values()))
+    bax.axs[1].set_xticklabels(list(target_mapping.keys()), rotation = 45, fontsize = 10)
+
+    #sns.despine(left = True)
+    bax.grid(
+             #axis='x',
+             False,
+             )
+
+    # line at 0.8 threshold
+
+    bax.axhline(
+                y = 0.8,
+                color = 'r',
+                linewidth = 0.6,
+                linestyle = '--',
+                )
+
+    #plt.xticks(
+    #           [0, 2, 4, 6, 8, 10, 12, 14],
+    #           ['asp', 'dep', 'val', 'prg', 'tgd', 'age', 'race', 'dbty']
+    #          )
 
     # label axes
 
-    plt.ylim(0, 1)
-    ax = plt.gca()
-    ax.set_ylabel(
-                  '$F_1$ (macro)',
-                  fontsize = 12,
-                  labelpad = 10,
-                  )
+    #plt.ylim(0, 1)
+    #ax = plt.gca()
+    #ax.set_ylabel(
+    #              '$F_1$ (macro)',
+    #              fontsize = 12,
+    #              labelpad = 10,
+    #              )
 
-    ax.set_xlabel(
-                  'Target',
-                  fontsize = 12,
-                  labelpad = 10,
-                  )
+    #ax.set_xlabel(
+    #              'Target',
+    #              fontsize = 12,
+    #              labelpad = 10,
+    #              )
 
-    sns.despine(left = True)
-    ax.grid(axis = 'x')
+    #sns.despine(left = True)
+    #ax.grid(axis = 'x')
 
     # set line at 0.9 threshold
 
-    ax.axhline(
-               y = 0.9,
-               color = 'r',
-               linewidth = 0.6,
-               linestyle = '--',
-               )
+    #ax.axhline(
+    #           y = 0.9,
+    #           color = 'r',
+    #           linewidth = 0.6,
+    #           linestyle = '--',
+    #           )
 
     # custom legend
 
@@ -740,17 +686,16 @@ def performance_scatterplot(df, plot_name):
                        Line2D([0], [0], marker = 'o', color = 'w', label = 'bert', markersize = 8, markerfacecolor = '#87bc45', lw = 0),
                        Line2D([0], [0], marker = 'o', color = 'w', label = 'roberta', markersize = 8, markerfacecolor = '#27aeef', lw = 0),
                        Line2D([0], [0], marker = 'o', color = 'w', label = 'distilbert', markersize = 8, markerfacecolor = '#b33dc6', lw = 0),
-                       Line2D([0], [0], marker = 'D', color = 'black', label = 'M (SD)', markersize = 7, lw = 1, linestyle = '-', markeredgewidth = 1)
                       ]
 
-    ax.legend(
-              handles = legend_elements,
-              loc = 'upper center',
-              bbox_to_anchor = (0.5, 1.15),
-              ncol = 4,
-              fontsize = 9,
-              frameon = False,
-              )
+    bax.axs[0].legend(
+                      handles = legend_elements,
+                      loc = 'upper center',
+                      bbox_to_anchor = (0.5, 1.15),
+                      ncol = 4,
+                      fontsize = 9,
+                      frameon = False,
+                      )
 
     # save
 
@@ -758,6 +703,7 @@ def performance_scatterplot(df, plot_name):
     plt.savefig(file_name)
 
     # display
+
     plt.show()
 
 import pandas as pd
