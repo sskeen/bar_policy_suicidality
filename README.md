@@ -4,6 +4,6 @@ Bodily autonomy reversal (BAR) policies, exemplified by the U.S. Supreme Courtâ€
 
 ## P-PAP
 
-A pre-analysis plan was filed 10-25-2024, and populated 04-17-2025, on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/).
+A pre-analysis plan was filed 10-25-2024, and populated 04-17-2025, on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/). Plain-language Aim iâ€“iii results summaries are provided in the project Wiki.
 
 
