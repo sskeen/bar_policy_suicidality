@@ -13,6 +13,6 @@ Among posts by disclosed pregnancy-capable Redditors ($n$ = 21K), in Model 1 int
 
 ## P-PAP
 
-A pre-analysis plan was filed 10-25-2024, and populated 04-17-2025, on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/). Plain-language Aim i–iii results summaries are provided in the project Wiki.
+A pre-analysis plan was filed 10-25-2024, and populated 04-17-2025, on the Open Science Framework at [osf.io/uc4kh/](https://osf.io/uc4kh/). Plain-language Aim i–iii results summaries are provided in the [project Wiki](https://osf.io/z2wra/wiki/home/).
 
 
